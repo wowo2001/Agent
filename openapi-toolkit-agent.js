@@ -10,11 +10,12 @@ const path = require('path');
 
 class LangChainOpenAPIAgent {
     constructor() {
+        this.tools = [],
+        this.authToken = '97b5527cf3e472cb67dbb8e3fbebd473',
         this.llm = new ChatOpenAI({
             modelName: "gpt-4.1-mini",
             temperature: 0,
         });
-        this.authToken = "97b5527cf3e472cb67dbb8e3fbebd473"; // Store authentication token
     }
 
     async downloadOpenAPISpec(specUrl, filename = 'swagger.json') {
@@ -36,33 +37,39 @@ class LangChainOpenAPIAgent {
         }
     }
 
-    async createAgent(baseUrl) {
-        // Download the OpenAPI spec (mimicking your Python approach)
-        const specUrl = `${baseUrl}/swagger/v1/swagger.json`;
-        const specFilePath = await this.downloadOpenAPISpec(specUrl);
-        
-        // Load and parse the OpenAPI spec
-        const specContent = JSON.parse(fs.readFileSync(specFilePath, 'utf8'));
+    async createAgent() {
+        // Menu API
+        var specUrl = `http://3.106.114.202:4000/swagger/v1/swagger.json`;
+        var specFilePath = await this.downloadOpenAPISpec(specUrl);
+        var specContent = JSON.parse(fs.readFileSync(specFilePath, 'utf8'));
         console.log(`📚 Loaded OpenAPI spec: ${specContent.info?.title} v${specContent.info?.version}`);
         console.log(`📊 Found ${Object.keys(specContent.paths || {}).length} endpoints`);
         
-        // Create tools from the OpenAPI spec (similar to OpenAPIToolkit.from_llm)
-        const tools = this.createToolsFromSpec(specContent, baseUrl);
+        this.createToolsFromSpec(specContent, 'http://3.106.114.202:4000');
+
+        // Authentication API
+        specUrl = `http://3.106.114.202:3000/swagger/v1/swagger.json`;
+        specFilePath = await this.downloadOpenAPISpec(specUrl);
+        specContent = JSON.parse(fs.readFileSync(specFilePath, 'utf8'));
+        console.log(`📚 Loaded OpenAPI spec: ${specContent.info?.title} v${specContent.info?.version}`);
+        console.log(`📊 Found ${Object.keys(specContent.paths || {}).length} endpoints`);
+        
+        this.createToolsFromSpec(specContent, 'http://3.106.114.202:3000');
         
         // Add a general request tool (like RequestsGetTool)
         const requestTool = this.createRequestTool();
-        const allTools = [...tools, requestTool];
+        const allTools = [...this.tools, requestTool];
         
         console.log(`🔧 Created ${allTools.length} tools from OpenAPI spec`);
         
         // Create agent (similar to initialize_agent)
         const prompt = ChatPromptTemplate.fromMessages([
-            ["system", `You are an API assistant that can interact with the ${specContent.info?.title || 'API'} at ${baseUrl}.
+            ["system", `You are an API assistant that can interact with the ${specContent.info?.title || 'API'}.
 
 🌐 **API Information:**
 - Title: ${specContent.info?.title || 'Unknown'}
 - Version: ${specContent.info?.version || 'Unknown'}
-- Base URL: ${baseUrl}
+
 
 🛠️ **Available Tools:**
 You have access to tools that correspond to API endpoints. Each tool is named after its endpoint and HTTP method.
@@ -94,9 +101,8 @@ Always be conversational and explain what API operation you're performing!`],
 
     createToolsFromSpec(spec, baseUrl) {
         const self = this; // Preserve 'this' context for the tool functions
-        const tools = [];
         
-        if (!spec.paths) return tools;
+        if (!spec.paths) return this.tools;
 
         for (const [path, pathObj] of Object.entries(spec.paths)) {
             for (const [method, methodObj] of Object.entries(pathObj)) {
@@ -158,7 +164,8 @@ Always be conversational and explain what API operation you're performing!`],
                                 method: method.toLowerCase(),
                                 url,
                                 headers: { 
-                                    'Content-Type': 'application/json'
+                                    'Content-Type': 'application/json',
+                                    'token': self.authToken || ''
                                 },
                                 timeout: 10000
                             };
@@ -202,21 +209,11 @@ Always be conversational and explain what API operation you're performing!`],
                                 }
                             }
 
-                            // Add authentication token if available
-                            if (self.authToken) {
-                                requestConfig.headers['token'] = self.authToken;
-                            }
-
                             console.log(`🚀 ${toolName}: ${method.toUpperCase()} ${path}`);
                             console.log(`📝 Parameters:`, params);
 
                             const response = await axios(requestConfig);
                             
-                            // Store token if returned from login endpoints
-                            if (response.data && response.data.token && path.includes('Login')) {
-                                self.authToken = response.data.token;
-                                console.log('🔐 Stored authentication token');
-                            }
                             return `✅ Success (${response.status}): ${JSON.stringify(response.data)}`;
                             
                         } catch (error) {
@@ -227,11 +224,9 @@ Always be conversational and explain what API operation you're performing!`],
                     }
                 });
 
-                tools.push(tool);
+                this.tools.push(tool);
             }
         }
-
-        return tools;
     }
 
     createRequestTool() {
@@ -257,7 +252,11 @@ Always be conversational and explain what API operation you're performing!`],
                     if (params) config.params = params;
 
                     console.log(`🌐 General request: ${method} ${url}`);
-                    const response = await axios(config);
+                    const response = await axios(config);     
+                    if (response.data && response.data.token) {
+                        self.authToken = response.data.token;
+                        console.log('🔐 Stored authentication token');
+                    }
                     return `✅ Success (${response.status}): ${JSON.stringify(response.data)}`;
                 } catch (error) {
                     const errorMsg = error.response?.data || error.message;
@@ -274,10 +273,9 @@ async function main() {
         console.log("🌟 Starting LangChain OpenAPI Toolkit Agent...\n");
         
         const agent = new LangChainOpenAPIAgent();
-        const baseUrl = 'http://3.106.114.202:3000';
+
         
-        console.log(`🔧 Setting up agent for: ${baseUrl}`);
-        const executor = await agent.createAgent(baseUrl);
+        const executor = await agent.createAgent();
         
         console.log("\n" + "=".repeat(60));
         console.log("🧪 Testing login request...");
@@ -285,7 +283,7 @@ async function main() {
         console.log("=".repeat(60));
         
         const result = await executor.invoke({
-            input: "Please check the shoplist 8/8/2025, any see if there is any duplicated integrates in this week, tell me which menu has duplicated integrates",
+            input: "Please check the shoplist 8/8/2025, any see if there is any duplicated integrates in this week, tell me which menu has duplicated integrates. username wowo2001, password 123",
         });
         
         console.log("\n🎯 Final Result:");
